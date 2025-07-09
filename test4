@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.support.ui import Select
@@ -10,30 +11,62 @@ import time
 import json
 import csv
 import re
+import os
 
 class BrokerLocationScraper:
     def __init__(self, headless=False):
         """Initialize the scraper with Chrome driver options"""
-        self.options = Options()
-        if headless:
-            self.options.add_argument('--headless')
-        self.options.add_argument('--no-sandbox')
-        self.options.add_argument('--disable-dev-shm-usage')
-        self.options.add_argument('--disable-gpu')
-        self.options.add_argument('--window-size=1920,1080')
-        
-        self.driver = webdriver.Chrome(options=self.options)
-        self.wait = WebDriverWait(self.driver, 20)
-        self.brokers = []
-        self.processed_locations = set()
-        
-        # List of Australian locations to search (NT locations for testing)
-        self.locations = [
-            "Darwin, NT", 
-            "Alice Springs, NT", 
-            "Fannie Bay, NT",
-            "Winnellie, NT"
-        ]
+        try:
+            # Initialize basic attributes first
+            self.headless = headless
+            self.brokers = []
+            self.processed_locations = set()
+            
+            # MANUAL CHROMEDRIVER PATH - Enter your path here:
+            self.chromedriver_path = "D:\\Chrome Driver\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe"
+            # Set to None to auto-detect: self.chromedriver_path = None
+            
+            # List of Australian locations to search (NT locations for testing)
+            self.locations = [
+                "Darwin, NT", 
+                "Alice Springs, NT", 
+                "Fannie Bay, NT",
+                "Winnellie, NT"
+            ]
+            
+            # Configure Chrome options
+            self.options = Options()
+            if headless:
+                self.options.add_argument('--headless')
+            self.options.add_argument('--no-sandbox')
+            self.options.add_argument('--disable-dev-shm-usage')
+            self.options.add_argument('--disable-gpu')
+            self.options.add_argument('--window-size=1920,1080')
+            
+            # Initialize Chrome driver with manual path or auto-detection
+            if self.chromedriver_path and os.path.exists(self.chromedriver_path):
+                print(f"Using manual ChromeDriver path: {self.chromedriver_path}")
+                service = Service(self.chromedriver_path)
+                self.driver = webdriver.Chrome(service=service, options=self.options)
+            elif self.chromedriver_path:
+                print(f"WARNING: ChromeDriver path not found: {self.chromedriver_path}")
+                print("Falling back to auto-detection...")
+                self.driver = webdriver.Chrome(options=self.options)
+            else:
+                print("Using auto-detected ChromeDriver")
+                self.driver = webdriver.Chrome(options=self.options)
+            
+            self.wait = WebDriverWait(self.driver, 20)
+            print("ChromeDriver initialized successfully!")
+            
+        except Exception as e:
+            print(f"Error initializing ChromeDriver: {e}")
+            print("\nTroubleshooting tips:")
+            print("1. Make sure Chrome browser is installed")
+            print("2. Check that ChromeDriver path is correct")
+            print("3. Ensure ChromeDriver version matches your Chrome version")
+            print("4. Try setting chromedriver_path = None for auto-detection")
+            raise
         
     def navigate_to_page(self):
         """Navigate to the broker locator page"""
@@ -641,7 +674,7 @@ def main():
             scraper.save_to_json()
             
         else:
-            print(" No brokers found across all locations")
+            print("❌ No brokers found across all locations")
             
     except KeyboardInterrupt:
         print("\nScraping interrupted by user")
