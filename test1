@@ -1,0 +1,688 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.support.ui import Select
+import time
+import csv
+import re
+
+class BrokerLocationScraper:
+    def __init__(self, headless=False):
+        """Initialize the scraper with Chrome driver options"""
+        # MANUAL CHROMEDRIVER PATH - Enter your path here:
+        self.chromedriver_path = "D:\\\\Chrome Driver\\\\chromedriver-win64\\\\chromedriver-win64\\\\chromedriver.exe"
+        # Set to None to auto-detect: self.chromedriver_path = None
+        
+        self.headless = headless
+        self.brokers = []
+        self.processed_locations = set()
+        
+        # List of Australian locations to search (NT locations for testing)
+        self.locations = [
+            "Darwin, NT", 
+            "Alice Springs, NT", 
+            "Fannie Bay, NT",
+            "Winnellie, NT"
+        ]
+        
+        # Setup the driver
+        self.driver, self.wait = self.setup_driver()
+    
+    def setup_driver(self):
+        """Setup Chrome WebDriver with options and service"""
+        try:
+            # Setup Chrome service with manual path
+            service = Service(executable_path=self.chromedriver_path)
+            
+            # Setup Chrome options
+            options = webdriver.ChromeOptions()
+            
+            if self.headless:
+                options.add_argument('--headless')
+            
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
+            options.add_argument('--disable-web-security')
+            options.add_argument('--disable-features=VizDisplayCompositor')
+            
+            # Create the driver
+            driver = webdriver.Chrome(service=service, options=options)
+            wait = WebDriverWait(driver, 20)
+            
+            print(f"WebDriver initialized successfully using: {self.chromedriver_path}")
+            return driver, wait
+            
+        except Exception as e:
+            print(f"Error initializing WebDriver: {e}")
+            print(f"Could not find ChromeDriver at: {self.chromedriver_path}")
+            print("Please check the path in the __init__ method")
+            raise e
+        
+    def navigate_to_page(self):
+        """Navigate to the broker locator page"""
+        url = "https://www.needabroker.com.au/broker-locator/?insurance_type=&business_type=&location="
+        print(f"Navigating to {url}")
+        self.driver.get(url)
+        
+        # Wait for page to load
+        self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(3)
+        
+    def find_location_input(self):
+        """Find the location input field"""
+        location_selectors = [
+            "input[name='location']",
+            "input[placeholder*='location']",
+            "input[placeholder*='postcode']",
+            "input[placeholder*='suburb']",
+            "input[placeholder*='city']",
+            "input[id*='location']",
+            "input[class*='location']",
+            "#location",
+            ".location-input",
+            "input[type='text']"
+        ]
+        
+        for selector in location_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                for element in elements:
+                    if element and element.is_displayed():
+                        print(f"Found location input with selector: {selector}")
+                        return element
+            except Exception as e:
+                print(f"Error with selector {selector}: {e}")
+                continue
+        
+        print("Could not find location input field")
+        return None
+    
+    def find_search_button(self):
+        """Find the search button"""
+        search_selectors = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button:contains('Search')",
+            ".search-button",
+            ".btn-search",
+            "#search-btn",
+            "button.btn",
+            "[onclick*='search']",
+            "button[value*='search']"
+        ]
+        
+        for selector in search_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                for element in elements:
+                    if element and element.is_displayed():
+                        text = (element.text or '').lower()
+                        value = (element.get_attribute('value') or '').lower()
+                        element_type = element.get_attribute('type') or ''
+                        
+                        if 'search' in text or 'find' in text or element_type == 'submit':
+                            print(f"Found search button with selector: {selector}")
+                            return element
+            except Exception as e:
+                print(f"Error with selector {selector}: {e}")
+                continue
+        
+        print("Could not find search button")
+        return None
+    
+    def search_location(self, location):
+        """Search for brokers in a specific location"""
+        try:
+            print(f"\nSearching for brokers in: {location}")
+            
+            # Find location input
+            location_input = self.find_location_input()
+            if not location_input:
+                return False
+            
+            # Clear and enter location
+            location_input.clear()
+            time.sleep(0.5)
+            location_input.send_keys(location)
+            time.sleep(1)
+            
+            # Find and click search button
+            search_button = self.find_search_button()
+            if search_button:
+                search_button.click()
+            else:
+                # Try pressing Enter if no button found
+                location_input.send_keys(Keys.RETURN)
+            
+            # Wait for results to load
+            time.sleep(5)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error searching location {location}: {e}")
+            return False
+    
+    def find_broker_list(self):
+        """Find the list of brokers in the results using specific dealer elements"""
+        # Look specifically for dealer-header and dealer-detail elements
+        dealer_selectors = [
+            ".dealer-header",
+            "[class*='dealer-header']",
+            ".dealer-detail", 
+            "[class*='dealer-detail']",
+            ".dealer",
+            "[class*='dealer']"
+        ]
+        
+        found_elements = []
+        
+        for selector in dealer_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    print(f"Found {len(elements)} elements with selector: {selector}")
+                    found_elements.extend(elements)
+            except Exception as e:
+                print(f"Error with selector {selector}: {e}")
+                continue
+        
+        return found_elements
+    
+    def extract_broker_info_from_list(self):
+        """Extract broker information from the dealer elements"""
+        brokers_found = []
+        
+        # Find dealer-header elements (broker names)
+        dealer_headers = self.driver.find_elements(By.CSS_SELECTOR, ".dealer-header, [class*='dealer-header']")
+        print(f"Found {len(dealer_headers)} dealer-header elements")
+        
+        # Find dealer-detail elements (addresses)
+        dealer_details = self.driver.find_elements(By.CSS_SELECTOR, ".dealer-detail, [class*='dealer-detail']")
+        print(f"Found {len(dealer_details)} dealer-detail elements")
+        
+        if not dealer_headers:
+            print("No dealer-header elements found. Let me check what elements are available...")
+            self.debug_available_elements()
+            return []
+        
+        # Extract broker information
+        for i, header in enumerate(dealer_headers):
+            try:
+                broker_info = {}
+                
+                # Extract broker name from dealer-header
+                broker_name = header.text.strip()
+                if broker_name:
+                    broker_info['name'] = broker_name
+                    print(f"Found broker name: {broker_name}")
+                
+                # Try to find corresponding dealer-detail
+                # First, try to find dealer-detail as a sibling or nearby element
+                full_address = ""
+                
+                # Method 1: Look for dealer-detail as next sibling
+                try:
+                    parent = header.find_element(By.XPATH, "..")
+                    if parent:
+                        detail_element = parent.find_element(By.CSS_SELECTOR, ".dealer-detail, [class*='dealer-detail']")
+                        if detail_element:
+                            full_address = detail_element.text.strip()
+                except Exception as e:
+                    print(f"Method 1 failed: {e}")
+                    pass
+                
+                # Method 2: Use the corresponding index if dealer-details exist
+                if not full_address and i < len(dealer_details) and dealer_details[i]:
+                    try:
+                        full_address = dealer_details[i].text.strip() if dealer_details[i] else ""
+                    except Exception as e:
+                        print(f"Method 2 failed: {e}")
+                        pass
+                
+                # Method 3: Look for dealer-detail within the same container
+                if not full_address:
+                    try:
+                        # Go up to parent container and look for dealer-detail
+                        container = header.find_element(By.XPATH, "../..")
+                        if container:
+                            detail_element = container.find_element(By.CSS_SELECTOR, ".dealer-detail, [class*='dealer-detail']")
+                            if detail_element:
+                                full_address = detail_element.text.strip()
+                    except Exception as e:
+                        print(f"Method 3 failed: {e}")
+                        pass
+                
+                # Store the full address for column 3
+                if full_address:
+                    broker_info['full_address'] = full_address
+                    print(f"Found full address: {full_address[:100]}...")  # Show first 100 chars
+                
+                    # Extract city, state, postcode for column 2 (address)
+                    address_lines = [line.strip() for line in full_address.split('\n') if line.strip()]
+                    
+                    # Find the line with city, state, postcode pattern
+                    city_state_postcode = ""
+                    
+                    for line in address_lines:
+                        # Look for Australian state abbreviations and postcode pattern
+                        # Pattern: City, STATE postcode (e.g., "Darwin, NT 0800")
+                        if re.search(r'\b(NSW|VIC|QLD|WA|SA|TAS|NT|ACT)\s+\d{4}\b', line, re.IGNORECASE):
+                            city_state_postcode = line
+                            break
+                    
+                    # If no state/postcode pattern found, try to get the second line
+                    if not city_state_postcode and len(address_lines) >= 2:
+                        # Check if second line looks like a city/state line
+                        second_line = address_lines[1]
+                        if ',' in second_line or re.search(r'\d{4}', second_line):
+                            city_state_postcode = second_line
+                    
+                    # If still no match, try to find any line with a postcode
+                    if not city_state_postcode:
+                        for line in address_lines:
+                            if re.search(r'\d{4}', line) and len(line) < 50:  # Reasonable length for city line
+                                city_state_postcode = line
+                                break
+                    
+                    if city_state_postcode:
+                        broker_info['address'] = city_state_postcode
+                        print(f"Found city/state/postcode: {city_state_postcode}")
+                    
+                    # Extract postcode for column 4
+                    postcode_matches = re.findall(r'\b\d{4}\b', full_address)
+                    if postcode_matches:
+                        broker_info['postcode'] = postcode_matches[0]  # Take the first 4-digit number
+                        print(f"Found postcode: {postcode_matches[0]}")
+                    else:
+                        print("No postcode found")
+                        
+                else:
+                    print(f"No address found for broker: {broker_name}")
+                
+                # Only add broker if we have at least a name
+                if broker_info.get('name'):
+                    brokers_found.append(broker_info)
+                
+            except Exception as e:
+                print(f"Error extracting broker {i+1}: {e}")
+                continue
+        
+        print(f"Successfully extracted {len(brokers_found)} brokers")
+        return brokers_found
+    
+    def extract_broker_from_element(self, element):
+        """Extract broker information from a single element"""
+        broker_info = {}
+        
+        try:
+            # Get all text content
+            text_content = element.text.strip()
+            
+            if not text_content:
+                return None
+            
+            # Try to find structured elements first
+            name_selectors = ["h1", "h2", "h3", "h4", ".name", ".title", ".broker-name", "strong", "b"]
+            for selector in name_selectors:
+                try:
+                    name_elem = element.find_element(By.CSS_SELECTOR, selector)
+                    name_text = name_elem.text.strip()
+                    if name_text and len(name_text) > 2:
+                        broker_info['name'] = name_text
+                        break
+                except:
+                    continue
+            
+            # If no structured name found, use first line
+            if not broker_info.get('name'):
+                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                if lines:
+                    broker_info['name'] = lines[0]
+            
+            # Extract phone number
+            phone_pattern = r'(\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}|\d{4}\s?\d{2}\s?\d{2}\s?\d{2}|1300\s?\d{3}\s?\d{3})'
+            phone_matches = re.findall(phone_pattern, text_content)
+            if phone_matches:
+                broker_info['phone'] = phone_matches[0].strip()
+            
+            # Look for phone in links
+            try:
+                phone_link = element.find_element(By.CSS_SELECTOR, "a[href^='tel:']")
+                phone_text = phone_link.get_attribute('href').replace('tel:', '').strip()
+                if phone_text:
+                    broker_info['phone'] = phone_text
+            except:
+                pass
+            
+            # Extract email
+            email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+            email_matches = re.findall(email_pattern, text_content)
+            if email_matches:
+                broker_info['email'] = email_matches[0]
+            
+            # Look for email in links
+            try:
+                email_link = element.find_element(By.CSS_SELECTOR, "a[href^='mailto:']")
+                email_text = email_link.get_attribute('href').replace('mailto:', '').strip()
+                if email_text:
+                    broker_info['email'] = email_text
+            except:
+                pass
+            
+            # Extract address
+            address_keywords = ['street', 'st', 'road', 'rd', 'avenue', 'ave', 'lane', 'ln', 'drive', 'dr', 'place', 'pl', 'nsw', 'vic', 'qld', 'wa', 'sa', 'tas', 'nt', 'act']
+            address_selectors = [".address", ".location", ".street-address"]
+            
+            # Try structured address first
+            for selector in address_selectors:
+                try:
+                    addr_elem = element.find_element(By.CSS_SELECTOR, selector)
+                    addr_text = addr_elem.text.strip()
+                    if addr_text:
+                        broker_info['address'] = addr_text
+                        break
+                except:
+                    continue
+            
+            # If no structured address, parse from text
+            if not broker_info.get('address'):
+                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                for line in lines[1:]:  # Skip first line (usually name)
+                    if any(keyword in line.lower() for keyword in address_keywords) and len(line) > 10:
+                        broker_info['address'] = line
+                        break
+                
+                # Look for postcode pattern
+                if not broker_info.get('address'):
+                    postcode_pattern = r'.*\b\d{4}\b.*'
+                    for line in lines[1:]:
+                        if re.match(postcode_pattern, line) and len(line) > 8:
+                            broker_info['address'] = line
+                            break
+            
+            # Extract website
+            url_pattern = r'https?://[^\s]+'
+            url_matches = re.findall(url_pattern, text_content)
+            if url_matches:
+                broker_info['website'] = url_matches[0]
+            
+            # Look for website in links
+            try:
+                website_links = element.find_elements(By.CSS_SELECTOR, "a[href^='http']")
+                for link in website_links:
+                    href = link.get_attribute('href')
+                    if href and 'needabroker.com.au' not in href:  # Exclude self-referential links
+                        broker_info['website'] = href
+                        break
+            except:
+                pass
+            
+            return broker_info if broker_info.get('name') else None
+            
+        except Exception as e:
+            print(f"Error extracting broker info: {e}")
+            return None
+    
+    def extract_from_page_text(self):
+        """Fallback method to extract from page text"""
+        brokers_found = []
+        
+        try:
+            # Get all text from the page
+            body_text = self.driver.find_element(By.TAG_NAME, "body").text
+            
+            # Look for insurance broker patterns in text
+            lines = [line.strip() for line in body_text.split('\n') if line.strip()]
+            
+            current_broker = {}
+            for i, line in enumerate(lines):
+                # Skip navigation and header text
+                if any(skip_word in line.lower() for skip_word in ['menu', 'navigation', 'header', 'footer', 'cookie']):
+                    continue
+                
+                # Look for potential broker names (lines that might be company names)
+                if (('insurance' in line.lower() or 'broker' in line.lower() or 
+                     'financial' in line.lower() or 'group' in line.lower()) and 
+                    len(line) < 100):
+                    
+                    if current_broker and current_broker.get('name'):
+                        brokers_found.append(current_broker)
+                    
+                    current_broker = {'name': line}
+                
+                # Look for addresses in subsequent lines
+                elif current_broker and not current_broker.get('address'):
+                    if re.search(r'\d{4}', line) or any(state in line.upper() for state in ['NSW', 'VIC', 'QLD', 'WA', 'SA', 'TAS', 'NT', 'ACT']):
+                        current_broker['address'] = line
+                
+                # Look for phone numbers
+                phone_match = re.search(r'(\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4})', line)
+                if phone_match and current_broker and not current_broker.get('phone'):
+                    current_broker['phone'] = phone_match.group(1)
+            
+            # Add the last broker if it exists
+            if current_broker and current_broker.get('name'):
+                brokers_found.append(current_broker)
+                
+        except Exception as e:
+            print(f"Error extracting from page text: {e}")
+        
+        return brokers_found
+    
+    def debug_available_elements(self):
+        """Debug method to see what elements are available on the page"""
+        print("\n=== DEBUG: Available Elements ===")
+        
+        try:
+            # Look for any elements with 'dealer' in the class name
+            dealer_elements = self.driver.find_elements(By.CSS_SELECTOR, "[class*='dealer']")
+            print(f"Found {len(dealer_elements)} elements with 'dealer' in class name:")
+            for i, elem in enumerate(dealer_elements[:10]):  # Show first 10
+                try:
+                    if elem:
+                        class_name = elem.get_attribute('class') or 'No class'
+                        text = elem.text.strip() if elem.text else 'No text'
+                        text = text[:50] + "..." if len(text) > 50 else text
+                        print(f"  {i+1}. Class: '{class_name}' | Text: '{text}'")
+                except Exception as e:
+                    print(f"  {i+1}. Error reading element: {e}")
+            
+            # Look for any elements that might contain broker names
+            potential_name_elements = self.driver.find_elements(By.CSS_SELECTOR, "h1, h2, h3, h4, .title, .name, strong")
+            print(f"\nFound {len(potential_name_elements)} potential name elements:")
+            for i, elem in enumerate(potential_name_elements[:10]):
+                try:
+                    if elem:
+                        text = elem.text.strip() if elem.text else 'No text'
+                        if text and len(text) > 3:
+                            print(f"  {i+1}. Text: '{text}'")
+                except Exception as e:
+                    print(f"  {i+1}. Error reading element: {e}")
+            
+            # Check page text for 'broker' mentions
+            try:
+                body = self.driver.find_element(By.TAG_NAME, "body")
+                if body:
+                    page_text = body.text or ""
+                    broker_count = page_text.lower().count('broker')
+                    insurance_count = page_text.lower().count('insurance')
+                    print(f"\nPage mentions: 'broker' {broker_count} times, 'insurance' {insurance_count} times")
+            except Exception as e:
+                print(f"Error reading page text: {e}")
+            
+        except Exception as e:
+            print(f"Debug error: {e}")
+        
+        print("=== END DEBUG ===\n")
+    
+    def scrape_all_locations(self, max_locations=None):
+        """Scrape brokers from multiple locations"""
+        try:
+            self.navigate_to_page()
+            
+            # Initial debug to see page structure
+            print("\n=== DEBUG: Initial Page Structure ===")
+            try:
+                # Check for any form elements
+                forms = self.driver.find_elements(By.TAG_NAME, "form")
+                print(f"Found {len(forms)} forms")
+                
+                # Check for input fields
+                inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                print(f"Found {len(inputs)} input fields")
+                for i, inp in enumerate(inputs[:3]):
+                    try:
+                        print(f"  Input {i+1}: type='{inp.get_attribute('type')}', name='{inp.get_attribute('name')}', placeholder='{inp.get_attribute('placeholder')}'")
+                    except:
+                        pass
+                
+                # Check for buttons
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                print(f"Found {len(buttons)} buttons")
+                for i, btn in enumerate(buttons[:3]):
+                    try:
+                        print(f"  Button {i+1}: text='{btn.text}', type='{btn.get_attribute('type')}'")
+                    except:
+                        pass
+            except Exception as e:
+                print(f"Debug error: {e}")
+            print("=== END DEBUG ===\n")
+            
+            locations_to_search = self.locations[:max_locations] if max_locations else self.locations
+            
+            for i, location in enumerate(locations_to_search):
+                print(f"\n{'='*60}")
+                print(f"Processing location {i+1}/{len(locations_to_search)}: {location}")
+                print(f"{'='*60}")
+                
+                if location in self.processed_locations:
+                    print(f"Skipping {location} (already processed)")
+                    continue
+                
+                # Search for this location
+                if self.search_location(location):
+                    # Extract broker information
+                    location_brokers = self.extract_broker_info_from_list()
+                    
+                    if location_brokers:
+                        print(f"Found {len(location_brokers)} brokers in {location}:")
+                        
+                        for broker in location_brokers:
+                            # Check for duplicates
+                            is_duplicate = any(
+                                existing.get('name', '').lower().strip() == broker.get('name', '').lower().strip()
+                                for existing in self.brokers
+                            )
+                            
+                            if not is_duplicate:
+                                self.brokers.append(broker)
+                                print(f"  Added: {broker.get('name', 'Unknown')}")
+                                if broker.get('address'):
+                                    print(f"     Address: {broker.get('address')}")
+                                if broker.get('postcode'):
+                                    print(f"     Postcode: {broker.get('postcode')}")
+                            else:
+                                print(f"  Skipped: {broker.get('name', 'Unknown')} (duplicate)")
+                    else:
+                        print(f"No brokers found in {location}")
+                        
+                        # Save page source for debugging if no results
+                        with open(f'debug_{location.replace(", ", "_").replace(" ", "_")}.html', 'w', encoding='utf-8') as f:
+                            f.write(self.driver.page_source)
+                
+                self.processed_locations.add(location)
+                
+                # Add delay between searches
+                time.sleep(2)
+            
+            print(f"\n{'='*60}")
+            print(f"SCRAPING COMPLETE!")
+            print(f"Total unique brokers found: {len(self.brokers)}")
+            print(f"Locations processed: {len(self.processed_locations)}")
+            print(f"{'='*60}")
+            
+            return self.brokers
+            
+        except Exception as e:
+            print(f"Error during location scraping: {e}")
+            return self.brokers
+    
+    def save_to_csv(self, filename='brokers.csv'):
+        """Save broker data to CSV file with 4 columns: name, address, full_address, postcode"""
+        if not self.brokers:
+            print("No broker data to save")
+            return
+        
+        fieldnames = ['name', 'address', 'full_address', 'postcode']
+        
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for broker in self.brokers:
+                row = {
+                    'name': broker.get('name', ''),
+                    'address': broker.get('address', ''),  # City, state, postcode line
+                    'full_address': broker.get('full_address', ''),  # Complete address text
+                    'postcode': broker.get('postcode', '')  # Just the 4-digit postcode
+                }
+                writer.writerow(row)
+        
+        print(f"Saved {len(self.brokers)} brokers to {filename}")
+    
+    def close(self):
+        """Close the browser"""
+        self.driver.quit()
+
+def main():
+    """Main function to run the scraper"""
+    scraper = BrokerLocationScraper(headless=False)
+    
+    try:
+        # Scrape brokers from all locations (limited to 4 for testing)
+        brokers = scraper.scrape_all_locations()  # Now only searches 4 locations
+        
+        if brokers:
+            print(f"\n📊 FINAL RESULTS:")
+            print(f"{'='*60}")
+            
+            for i, broker in enumerate(brokers, 1):
+                print(f"\n{i:3d}. {broker.get('name', 'Unknown')}")
+                if broker.get('address'):
+                    print(f"     📍 {broker.get('address')}")
+                if broker.get('phone'):
+                    print(f"     📞 {broker.get('phone')}")
+                if broker.get('email'):
+                    print(f"     📧 {broker.get('email')}")
+                if broker.get('website'):
+                    print(f"     🌐 {broker.get('website')}")
+            
+            # Save results
+            scraper.save_to_csv()
+            scraper.save_to_json()
+            
+        else:
+            print("❌ No brokers found across all locations")
+            
+    except KeyboardInterrupt:
+        print("\nScraping interrupted by user")
+        if scraper.brokers:
+            print(f"Saving {len(scraper.brokers)} brokers found so far...")
+            scraper.save_to_csv()
+            
+    except Exception as e:
+        print(f"Error in main: {e}")
+        
+    finally:
+        scraper.close()
+
+if __name__ == "__main__":
+    main()
