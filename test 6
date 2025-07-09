@@ -1,0 +1,246 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.keys import Keys
+import time
+import csv
+import re
+import os
+
+class BrokerLocationScraper:
+    def __init__(self):
+        """Initialize the scraper with optimized Chrome driver options"""
+        # Initialize basic attributes
+        self.brokers = []
+        self.processed_locations = set()
+        
+        # MANUAL CHROMEDRIVER PATH - Enter your path here:
+        self.chromedriver_path = "D:\\Chrome Driver\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe"
+        # Set to None to auto-detect: self.chromedriver_path = None
+        
+        # List of Australian locations to search
+        self.locations = [
+            "Darwin, NT", 
+            "Alice Springs, NT", 
+            "Fannie Bay, NT",
+            "Winnellie, NT"
+        ]
+        
+        # Configure Chrome options for speed
+        self.options = Options()
+        self.options.add_argument('--headless')  # Always headless for speed
+        self.options.add_argument('--no-sandbox')
+        self.options.add_argument('--disable-dev-shm-usage')
+        self.options.add_argument('--disable-gpu')
+        self.options.add_argument('--disable-extensions')
+        self.options.add_argument('--disable-plugins')
+        self.options.add_argument('--disable-images')  # Don't load images
+        self.options.add_argument('--disable-javascript')  # Disable JS if possible
+        self.options.add_argument('--disable-css')  # Don't load CSS
+        self.options.add_argument('--window-size=1920,1080')
+        self.options.add_argument('--disable-logging')
+        self.options.add_argument('--disable-background-timer-throttling')
+        self.options.add_argument('--disable-renderer-backgrounding')
+        self.options.add_argument('--disable-backgrounding-occluded-windows')
+        
+        # Initialize Chrome driver
+        if self.chromedriver_path and os.path.exists(self.chromedriver_path):
+            service = Service(self.chromedriver_path)
+            self.driver = webdriver.Chrome(service=service, options=self.options)
+        else:
+            self.driver = webdriver.Chrome(options=self.options)
+        
+        self.wait = WebDriverWait(self.driver, 10)  # Reduced wait time
+        
+    def navigate_to_page(self):
+        """Navigate to the broker locator page"""
+        url = "https://www.needabroker.com.au/broker-locator/?insurance_type=&business_type=&location="
+        self.driver.get(url)
+        self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(1)  # Reduced wait time
+        
+    def find_location_input(self):
+        """Find the location input field"""
+        location_selectors = [
+            "input[name='location']",
+            "input[placeholder*='location']",
+            "input[id*='location']",
+            "input[type='text']"
+        ]
+        
+        for selector in location_selectors:
+            element = self.driver.find_element(By.CSS_SELECTOR, selector)
+            if element.is_displayed():
+                return element
+        return None
+    
+    def find_search_button(self):
+        """Find the search button"""
+        search_selectors = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button.btn",
+            ".search-button"
+        ]
+        
+        for selector in search_selectors:
+            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            for element in elements:
+                if element.is_displayed():
+                    return element
+        return None
+    
+    def search_location(self, location):
+        """Search for brokers in a specific location"""
+        location_input = self.find_location_input()
+        if not location_input:
+            return False
+        
+        location_input.clear()
+        location_input.send_keys(location)
+        time.sleep(0.5)  # Reduced wait
+        
+        search_button = self.find_search_button()
+        if search_button:
+            search_button.click()
+        else:
+            location_input.send_keys(Keys.RETURN)
+        
+        time.sleep(2)  # Reduced wait time
+        return True
+    
+    def extract_broker_info_from_list(self):
+        """Extract broker information from the dealer elements"""
+        brokers_found = []
+        
+        # Find dealer elements
+        dealer_headers = self.driver.find_elements(By.CSS_SELECTOR, ".dealer-header, [class*='dealer-header']")
+        dealer_details = self.driver.find_elements(By.CSS_SELECTOR, ".dealer-detail, [class*='dealer-detail']")
+        
+        if not dealer_headers:
+            return []
+        
+        # Extract broker information
+        for i, header in enumerate(dealer_headers):
+            broker_info = {}
+            
+            # Extract broker name
+            broker_name = header.text.strip()
+            if broker_name:
+                broker_info['name'] = broker_name
+            
+            # Extract address info
+            full_address = ""
+            
+            # Try multiple methods to find address
+            parent = header.find_element(By.XPATH, "..")
+            detail_element = parent.find_element(By.CSS_SELECTOR, ".dealer-detail, [class*='dealer-detail']")
+            full_address = detail_element.text.strip()
+            
+            if not full_address and i < len(dealer_details):
+                full_address = dealer_details[i].text.strip()
+            
+            if full_address:
+                broker_info['full_address'] = full_address
+                
+                # Extract city, state, postcode for address column
+                address_lines = [line.strip() for line in full_address.split('\n') if line.strip()]
+                
+                city_state_postcode = ""
+                for line in address_lines:
+                    if re.search(r'\b(NSW|VIC|QLD|WA|SA|TAS|NT|ACT)\s+\d{4}\b', line, re.IGNORECASE):
+                        city_state_postcode = line
+                        break
+                
+                if not city_state_postcode and len(address_lines) >= 2:
+                    second_line = address_lines[1]
+                    if ',' in second_line or re.search(r'\d{4}', second_line):
+                        city_state_postcode = second_line
+                
+                if city_state_postcode:
+                    broker_info['address'] = city_state_postcode
+                
+                # Extract postcode
+                postcode_matches = re.findall(r'\b\d{4}\b', full_address)
+                if postcode_matches:
+                    broker_info['postcode'] = postcode_matches[0]
+                
+                # Extract state
+                state_matches = re.findall(r'\b(NSW|VIC|QLD|WA|SA|TAS|NT|ACT)\b', full_address, re.IGNORECASE)
+                if state_matches:
+                    broker_info['state'] = state_matches[0].upper()
+            
+            # Only add broker if we have a name
+            if broker_info.get('name'):
+                brokers_found.append(broker_info)
+        
+        return brokers_found
+    
+    def scrape_all_locations(self):
+        """Scrape brokers from multiple locations"""
+        self.navigate_to_page()
+        
+        for location in self.locations:
+            if location in self.processed_locations:
+                continue
+            
+            if self.search_location(location):
+                location_brokers = self.extract_broker_info_from_list()
+                
+                for broker in location_brokers:
+                    # Check for duplicates based on full_address
+                    is_duplicate = any(
+                        existing.get('full_address', '').lower().strip() == broker.get('full_address', '').lower().strip()
+                        and broker.get('full_address', '').strip()
+                        for existing in self.brokers
+                    )
+                    
+                    if not is_duplicate:
+                        self.brokers.append(broker)
+            
+            self.processed_locations.add(location)
+            time.sleep(1)  # Minimal delay between searches
+        
+        return self.brokers
+    
+    def save_to_csv(self, filename='brokers.csv'):
+        """Save broker data to CSV file"""
+        if not self.brokers:
+            return
+        
+        fieldnames = ['name', 'address', 'full_address', 'postcode', 'state']
+        
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for broker in self.brokers:
+                row = {
+                    'name': broker.get('name', ''),
+                    'address': broker.get('address', ''),
+                    'full_address': broker.get('full_address', ''),
+                    'postcode': broker.get('postcode', ''),
+                    'state': broker.get('state', '')
+                }
+                writer.writerow(row)
+    
+    def close(self):
+        """Close the browser"""
+        self.driver.quit()
+
+def main():
+    """Main function to run the scraper"""
+    scraper = BrokerLocationScraper()
+    
+    brokers = scraper.scrape_all_locations()
+    
+    if brokers:
+        scraper.save_to_csv()
+    
+    scraper.close()
+
+if __name__ == "__main__":
+    main()
